@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -20,28 +19,32 @@ const (
 )
 
 var (
-	linkRegx = regexp.MustCompile(`^(\s*)-\s+\[INCLUDE]\s*\(.+\)$`)
+	linkRegx      = regexp.MustCompile(`(\s*)-\s+\[INCLUDE]\s*\((.+)\)`)
+	plainLinkRegx = regexp.MustCompile(`(\s*)-\s+\[.+]\s*\((.+)\)`)
 
-	verbose = false
+	verbose = true
 )
 
 func main() {
 	if _, err := exec.LookPath("mdbook"); err != nil {
 		log.Fatalln("mdbook not found")
 	}
-	root, err := getRoot()
-	if err != nil {
-		log.Fatalf("%+v\n", err)
-	}
-	newContent, err := transform(filepath.Join(root, "src", summaryTemplateName))
-	if err != nil {
-		log.Fatalf("%+v\n", err)
-	}
-	if verbose {
-		fmt.Println(newContent)
-	}
-	if err := os.WriteFile(filepath.Join(root, "src", summaryName), []byte(newContent), 0666); err != nil {
-		log.Fatalf("%+v\n", errors.WithStack(err))
+
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "build", "serve":
+			root, err := getRoot()
+			if err != nil {
+				log.Fatalf("%+v\n", err)
+			}
+			newContent, err := transform(filepath.Join(root, "src", summaryTemplateName))
+			if err != nil {
+				log.Fatalf("%+v\n", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "src", summaryName), []byte(newContent), 0666); err != nil {
+				log.Fatalf("%+v\n", errors.WithStack(err))
+			}
+		}
 	}
 
 	cmd := exec.Command("mdbook", os.Args[1:]...)
@@ -59,10 +62,7 @@ func getRoot() (string, error) {
 	if isRoot(path) {
 		return path, nil
 	}
-	current, err := filepath.Abs(".")
-	if err != nil {
-		return "", errors.WithStack(err)
-	}
+	current := absPath(".")
 	if isRoot(current) {
 		return current, nil
 	}
@@ -92,8 +92,17 @@ func dirExist(path string) bool {
 	return stat.IsDir()
 }
 
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		panic(err)
+	}
+	return abs
+}
+
 func transform(path string) (string, error) {
-	content, err := os.Open(path)
+	summaryTplAbsPath := absPath(path)
+	content, err := os.Open(summaryTplAbsPath)
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
@@ -105,25 +114,21 @@ func transform(path string) (string, error) {
 		if err != nil && err != io.EOF {
 			return "", errors.WithStack(err)
 		}
-		if line[len(line)-1] == '\n' {
-			line = line[:len(line)-1]
-		}
-		if indexes := linkRegx.FindSubmatchIndex(line); len(indexes) > 5 {
+		if indexes := linkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
 			prefix := line[indexes[2]:indexes[3]]
 			link := line[indexes[4]:indexes[5]]
-			target := filepath.Join(filepath.Dir(path), string(link))
+			target := absPath(filepath.Join(filepath.Dir(path), string(link)))
 			if verbose {
 				log.Printf("line: %q\nprefix=%q\nlink:%q\ntarget:%q\n", line, prefix, link, target)
 			}
-			fmt.Fprintln(retBuf, "copy from", target)
-			if err := embedFragment(retBuf, prefix, target); err != nil {
+			if err := embedFragment(retBuf, prefix, summaryTplAbsPath, target); err != nil {
 				return "", err
 			}
 		} else {
-			if _, err := retBuf.Write(line); err != nil {
-				return "", errors.WithStack(err)
+			if verbose {
+				log.Printf("not match: %q  indexes:%v\n", line, indexes)
 			}
-			if err := retBuf.WriteByte('\n'); err != nil {
+			if _, err := retBuf.Write(line); err != nil {
 				return "", errors.WithStack(err)
 			}
 		}
@@ -134,7 +139,7 @@ func transform(path string) (string, error) {
 	return retBuf.String(), nil
 }
 
-func embedFragment(w *strings.Builder, prefix []byte, path string) error {
+func embedFragment(w *strings.Builder, prefix []byte, base, path string) error {
 	reader, err := os.Open(path)
 	if err != nil {
 		return errors.WithStack(err)
@@ -146,17 +151,50 @@ func embedFragment(w *strings.Builder, prefix []byte, path string) error {
 		if err != nil && err != io.EOF {
 			return errors.WithStack(err)
 		}
-		if _, err := w.Write(prefix); err != nil {
-			return errors.WithStack(err)
+		if err := write(w, prefix); err != nil {
+			return err
 		}
-		if _, err := w.Write(line); err != nil {
-			return errors.WithStack(err)
+		if err := replace(w, line, base, path); err != nil {
+			return err
 		}
 		if err == io.EOF {
 			break
 		}
 	}
 	if err := w.WriteByte('\n'); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
+}
+
+func replace(w *strings.Builder, line []byte, base, current string) error {
+	if indexes := plainLinkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
+		target := line[indexes[4]:indexes[5]]
+		relTarget := absPath(filepath.Join(filepath.Dir(current), string(target)))
+		rep, err := filepath.Rel(filepath.Dir(base), relTarget)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		if err := write(w, line[:indexes[4]]); err != nil {
+			return err
+		}
+		if err := write(w, []byte(rep)); err != nil {
+			return err
+		}
+		if err := write(w, line[indexes[5]:]); err != nil {
+			return err
+		}
+		return nil
+	} else {
+		if verbose {
+			log.Printf("replace not match %q indexes:%v\n", line, indexes)
+		}
+		return write(w, line)
+	}
+}
+
+func write(w *strings.Builder, content []byte) error {
+	if _, err := w.Write(content); err != nil {
 		return errors.WithStack(err)
 	}
 	return nil
