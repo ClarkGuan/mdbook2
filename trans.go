@@ -16,6 +16,8 @@ import (
 var (
 	linkRegx      = regexp.MustCompile(`(\s*)-\s+\[INCLUDE]\s*\((.+)\)`)
 	plainLinkRegx = regexp.MustCompile(`(\s*)-\s+\[.+]\s*\((.+)\)`)
+
+	newline = []byte("\n")
 )
 
 type Replacer struct {
@@ -135,6 +137,9 @@ func (r *Replacer) readFile(prefix []byte, path string) error {
 		if err == io.EOF {
 			break
 		}
+	}
+	if err := write(&r.writeBuf, newline); err != nil {
+		return err
 	}
 	return nil
 }
