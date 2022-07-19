@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"unicode"
 
 	"github.com/pkg/errors"
 )
@@ -76,8 +78,8 @@ func (r *Replacer) read() (bool, error) {
 		}
 		if indexes := linkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
 			prefix := line[indexes[2]:indexes[3]]
-			link := line[indexes[4]:indexes[5]]
-			target := filepath.Join(r.baseDir, string(link))
+			link := urlDecode(string(line[indexes[4]:indexes[5]]))
+			target := filepath.Join(r.baseDir, link)
 			if err := r.readFile(prefix, target); err != nil {
 				return false, err
 			}
@@ -111,15 +113,15 @@ func (r *Replacer) readFile(prefix []byte, path string) error {
 			return err
 		}
 		if indexes := plainLinkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
-			link := line[indexes[4]:indexes[5]]
-			newLink, err := filepath.Rel(r.baseDir, absPath(filepath.Join(filepath.Dir(path), string(link))))
+			link := urlDecode(string(line[indexes[4]:indexes[5]]))
+			newLink, err := filepath.Rel(r.baseDir, absPath(filepath.Join(filepath.Dir(path), link)))
 			if err != nil {
 				return errors.WithStack(err)
 			}
 			if err := write(&r.writeBuf, line[:indexes[4]]); err != nil {
 				return err
 			}
-			if err := write(&r.writeBuf, []byte(newLink)); err != nil {
+			if err := write(&r.writeBuf, []byte(urlEncode(newLink))); err != nil {
 				return err
 			}
 			if err := write(&r.writeBuf, line[indexes[5]:]); err != nil {
@@ -135,4 +137,25 @@ func (r *Replacer) readFile(prefix []byte, path string) error {
 		}
 	}
 	return nil
+}
+
+func urlDecode(source string) string {
+	unescape, err := url.PathUnescape(source)
+	if err != nil {
+		panic(err)
+	}
+	return unescape
+}
+
+func urlEncode(source string) string {
+	src := []rune(source)
+	ret := make([]rune, 0, len(src))
+	for _, r := range src {
+		if unicode.IsSpace(r) {
+			ret = append(ret, []rune(url.PathEscape(string(r)))...)
+		} else {
+			ret = append(ret, r)
+		}
+	}
+	return string(ret)
 }
