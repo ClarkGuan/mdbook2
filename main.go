@@ -9,16 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-var (
-	verbose = true
-)
-
 func main() {
 	if _, err := exec.LookPath("mdbook"); err != nil {
 		log.Fatalln("mdbook not found")
 	}
 
-	removes := make([]string, 0)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "build", "serve":
@@ -26,8 +21,15 @@ func main() {
 			if err != nil {
 				log.Fatalf("%+v\n", err)
 			}
-			if err := transform(filepath.Join(root, "src", summaryTemplateName), &removes, true); err != nil {
+			r, err := NewReplacer(filepath.Join(root, "src", "SUMMARY.tpl.md"))
+			if err != nil {
 				log.Fatalf("%+v\n", err)
+			}
+			if err := r.Start(); err != nil {
+				log.Fatalf("%+v\n", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "src", "SUMMARY.md"), r.Bytes(), 0666); err != nil {
+				log.Fatalf("%+v\n", errors.WithStack(err))
 			}
 		}
 	}
@@ -39,11 +41,5 @@ func main() {
 	cmd.Env = append(cmd.Env, os.Environ()...)
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("%+v\n", err)
-	}
-
-	for _, r := range removes {
-		if err := os.Remove(r); err != nil {
-			log.Fatalf("%+v\n", errors.WithStack(err))
-		}
 	}
 }

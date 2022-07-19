@@ -1,8 +1,11 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/pkg/errors"
 )
 
 func getRoot() (string, error) {
@@ -21,7 +24,7 @@ func isRoot(path string) bool {
 	return dirExist(path) &&
 		dirExist(filepath.Join(path, "src")) &&
 		fileExist(filepath.Join(path, "book.toml")) &&
-		fileExist(filepath.Join(path, "src", summaryTemplateName))
+		fileExist(filepath.Join(path, "src", "SUMMARY.tpl.md"))
 }
 
 func fileExist(path string) bool {
@@ -46,4 +49,19 @@ func absPath(path string) string {
 		panic(err)
 	}
 	return abs
+}
+
+func closeQuietly(c io.Closer) {
+	if c != nil {
+		if err := c.Close(); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func write(w io.Writer, content []byte) error {
+	if _, err := w.Write(content); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
 }

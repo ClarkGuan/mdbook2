@@ -7,21 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/pkg/errors"
-)
-
-const (
-	fragmentTemplateName = "fragment.tpl.md"
-	summaryTemplateName  = "SUMMARY.tpl.md"
-	fragmentName         = "fragment.md"
-	summaryName          = "SUMMARY.md"
-)
-
-var (
-	templateSuffix = []byte(".tpl.md")
-	newline        = []byte("\n")
 )
 
 var (
@@ -29,156 +16,123 @@ var (
 	plainLinkRegx = regexp.MustCompile(`(\s*)-\s+\[.+]\s*\((.+)\)`)
 )
 
-var (
-	errNotTlpFile = errors.New("并不是模板文件")
-)
+type Replacer struct {
+	// summary.md 所在目录的绝对路径
+	baseDir  string
+	readBuf  bytes.Buffer
+	writeBuf bytes.Buffer
+}
 
-func transform(source string, removes *[]string, ignore bool) error {
-	if !isTemplate(source) {
-		return errNotTlpFile
+func NewReplacer(path string) (*Replacer, error) {
+	// path -> SUMMARY.tpl.md 的路径
+	r := new(Replacer)
+	r.baseDir = filepath.Dir(absPath(path))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.WithStack(err)
 	}
+	if _, err := r.readBuf.Write(content); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return r, nil
+}
 
-	file, err := os.Open(source)
+func (r *Replacer) swap() {
+	tmp := r.readBuf
+	r.readBuf = r.writeBuf
+	r.writeBuf = tmp
+	r.writeBuf.Reset()
+}
+
+func (r *Replacer) String() string {
+	return r.writeBuf.String()
+}
+
+func (r *Replacer) Bytes() []byte {
+	return r.writeBuf.Bytes()
+}
+
+func (r *Replacer) Start() error {
+	for {
+		notOver, err := r.read()
+		if err != nil {
+			return err
+		}
+		if !notOver {
+			break
+		}
+		r.swap()
+	}
+	return nil
+}
+
+func (r *Replacer) read() (bool, error) {
+	reader := bufio.NewReader(&r.readBuf)
+	found := false
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil && err != io.EOF {
+			return false, errors.WithStack(err)
+		}
+		if indexes := linkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
+			prefix := line[indexes[2]:indexes[3]]
+			link := line[indexes[4]:indexes[5]]
+			target := filepath.Join(r.baseDir, string(link))
+			if err := r.readFile(prefix, target); err != nil {
+				return false, err
+			}
+			// 找到了替换项
+			found = true
+		} else {
+			if err := write(&r.writeBuf, line); err != nil {
+				return false, err
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+	}
+	return found, nil
+}
+
+func (r *Replacer) readFile(prefix []byte, path string) error {
+	file, err := os.Open(path)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	defer closeQuietly(file)
-
 	reader := bufio.NewReader(file)
-	targetFile, err := os.OpenFile(targetPath(source), os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer closeQuietly(targetFile)
-	writer := bufio.NewWriter(targetFile)
-
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil && err != io.EOF {
 			return errors.WithStack(err)
 		}
-
-		if indexes := linkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
-			prefix := line[indexes[2]:indexes[3]]
+		if err := write(&r.writeBuf, prefix); err != nil {
+			return err
+		}
+		if indexes := plainLinkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
 			link := line[indexes[4]:indexes[5]]
-			target := absPath(filepath.Join(filepath.Dir(source), string(link)))
-
-			if bytes.HasSuffix(link, templateSuffix) {
-				// 递归处理
-				if err := transform(target, removes, false); err != nil {
-					return err
-				}
+			newLink, err := filepath.Rel(r.baseDir, absPath(filepath.Join(filepath.Dir(path), string(link))))
+			if err != nil {
+				return errors.WithStack(err)
 			}
-
-			// 开始内嵌文件内容
-			if err := embedFragment(writer, prefix, absPath(source), target); err != nil {
+			if err := write(&r.writeBuf, line[:indexes[4]]); err != nil {
+				return err
+			}
+			if err := write(&r.writeBuf, []byte(newLink)); err != nil {
+				return err
+			}
+			if err := write(&r.writeBuf, line[indexes[5]:]); err != nil {
 				return err
 			}
 		} else {
-			if _, err := writer.Write(line); err != nil {
-				return errors.WithStack(err)
+			if err := write(&r.writeBuf, line); err != nil {
+				return err
 			}
 		}
-
 		if err == io.EOF {
 			break
 		}
-	}
-
-	if err := writer.Flush(); err != nil {
-		return err
-	}
-
-	if !ignore {
-		// 处理完后生成新的文件，名称如下
-		needRemovePath := source[:len(source)-len(templateSuffix)] + ".md"
-		*removes = append(*removes, needRemovePath)
-	}
-	return nil
-}
-
-func embedFragment(w io.Writer, prefix []byte, base, path string) error {
-	reader, err := os.Open(path)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer closeQuietly(reader)
-	bufReader := bufio.NewReader(reader)
-	for {
-		line, err := bufReader.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			return errors.WithStack(err)
-		}
-		if err := write(w, prefix); err != nil {
-			return err
-		}
-		if err := replace(w, line, base, path); err != nil {
-			return err
-		}
-		if err == io.EOF {
-			break
-		}
-	}
-	if _, err := w.Write(newline); err != nil {
-		return errors.WithStack(err)
-	}
-	return nil
-}
-
-func targetPath(source string) string {
-	dir := filepath.Dir(source)
-	if strings.HasSuffix(source, fragmentTemplateName) {
-		return filepath.Join(dir, fragmentName)
-	} else if strings.HasSuffix(source, summaryTemplateName) {
-		return filepath.Join(dir, summaryName)
-	}
-	panic("not predefined file name")
-}
-
-func closeQuietly(c io.Closer) {
-	if c != nil {
-		if err := c.Close(); err != nil {
-			panic(err)
-		}
-	}
-}
-
-func isTemplate(path string) bool {
-	baseName := filepath.Base(path)
-	switch baseName {
-	case fragmentTemplateName, summaryTemplateName:
-		return true
-	default:
-		return false
-	}
-}
-
-func replace(w io.Writer, line []byte, base, current string) error {
-	if indexes := plainLinkRegx.FindSubmatchIndex(line); len(indexes) >= 6 {
-		target := line[indexes[4]:indexes[5]]
-		relative := absPath(filepath.Join(filepath.Dir(current), string(target)))
-		rep, err := filepath.Rel(filepath.Dir(base), relative)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		if err := write(w, line[:indexes[4]]); err != nil {
-			return err
-		}
-		if err := write(w, []byte(rep)); err != nil {
-			return err
-		}
-		if err := write(w, line[indexes[5]:]); err != nil {
-			return err
-		}
-		return nil
-	} else {
-		return write(w, line)
-	}
-}
-
-func write(w io.Writer, content []byte) error {
-	if _, err := w.Write(content); err != nil {
-		return errors.WithStack(err)
 	}
 	return nil
 }
