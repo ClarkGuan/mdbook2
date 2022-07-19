@@ -26,7 +26,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("%+v\n", err)
 			}
-			if err := transform(filepath.Join(root, "src", summaryTemplateName), &removes); err != nil {
+			if err := transform(filepath.Join(root, "src", summaryTemplateName), &removes, true); err != nil {
 				log.Fatalf("%+v\n", err)
 			}
 		}

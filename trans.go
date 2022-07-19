@@ -33,7 +33,7 @@ var (
 	errNotTlpFile = errors.New("并不是模板文件")
 )
 
-func transform(source string, removes *[]string) error {
+func transform(source string, removes *[]string, ignore bool) error {
 	if !isTemplate(source) {
 		return errNotTlpFile
 	}
@@ -65,12 +65,9 @@ func transform(source string, removes *[]string) error {
 
 			if bytes.HasSuffix(link, templateSuffix) {
 				// 递归处理
-				if err := transform(target, removes); err != nil {
+				if err := transform(target, removes, false); err != nil {
 					return err
 				}
-				// 处理完后生成新的文件，名称如下
-				target = target[:len(target)-len(templateSuffix)] + ".md"
-				*removes = append(*removes, target)
 			}
 
 			// 开始内嵌文件内容
@@ -92,6 +89,11 @@ func transform(source string, removes *[]string) error {
 		return err
 	}
 
+	if !ignore {
+		// 处理完后生成新的文件，名称如下
+		needRemovePath := source[:len(source)-len(templateSuffix)] + ".md"
+		*removes = append(*removes, needRemovePath)
+	}
 	return nil
 }
 
