@@ -1,4 +1,4 @@
-module mdbook2
+module github.com/ClarkGuan/mdbook2
 
 go 1.18
 
